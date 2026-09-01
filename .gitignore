@@ -1,0 +1,45 @@
+# Binaries
+/gozzle
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Coverage and profiling
+*.out
+*.coverprofile
+coverage.*
+profile.cov
+
+# Go workspace
+go.work
+go.work.sum
+
+# Runtime data (WAL, indexes, etc.)
+/data/
+
+# Local-only notes and drafts
+.vscode/
+.cursor/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
