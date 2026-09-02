@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/mortytheplatypus/gozzle/internal/config"
+	"github.com/mortytheplatypus/gozzle/internal/log"
 )
 
 type Server struct {
@@ -13,9 +14,13 @@ type Server struct {
 
 func New(cfg *config.Config) *Server {
 
+	logService := log.NewLogService()
+	logHandler := log.NewLogHandler(logService)
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/health", health)
+	mux.HandleFunc("POST /api/logs", logHandler.Append)
 
 	return &Server{
 		http: &http.Server{
