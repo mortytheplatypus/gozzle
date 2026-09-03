@@ -12,9 +12,13 @@ type Server struct {
 	http *http.Server
 }
 
-func New(cfg *config.Config) *Server {
+func New(cfg *config.Config) (*Server, error) {
 
-	store := log.NewStore(cfg.WALDir)
+	store, err := log.NewStore(cfg.WALDir)
+	if err != nil {
+		return nil, err
+	}
+
 	logService := log.NewLogService(store)
 	logHandler := log.NewLogHandler(logService)
 
@@ -28,7 +32,7 @@ func New(cfg *config.Config) *Server {
 			Addr:    cfg.ListenAddr,
 			Handler: mux,
 		},
-	}
+	}, nil
 
 }
 

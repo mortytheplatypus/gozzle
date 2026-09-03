@@ -15,7 +15,6 @@ func NewLogService(store *Store) *Service {
 func (s *Service) Append(req AppendLogRequest) error {
 
 	entry := &LogEntry{
-		ID:        1,
 		ServiceID: req.ServiceID,
 		Message:   req.Message,
 		Level:     req.Level,
