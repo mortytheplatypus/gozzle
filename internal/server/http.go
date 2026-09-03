@@ -14,7 +14,8 @@ type Server struct {
 
 func New(cfg *config.Config) *Server {
 
-	logService := log.NewLogService()
+	store := log.NewStore(cfg.WALDir)
+	logService := log.NewLogService(store)
 	logHandler := log.NewLogHandler(logService)
 
 	mux := http.NewServeMux()

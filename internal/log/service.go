@@ -1,15 +1,15 @@
 package log
 
 import (
-	"fmt"
 	"time"
 )
 
 type Service struct {
+	store *Store
 }
 
-func NewLogService() *Service {
-	return &Service{}
+func NewLogService(store *Store) *Service {
+	return &Service{store: store}
 }
 
 func (s *Service) Append(req AppendLogRequest) error {
@@ -22,13 +22,5 @@ func (s *Service) Append(req AppendLogRequest) error {
 		CreatedAt: time.Now(),
 	}
 
-	fmt.Printf("log: id=%d service=%s level=%s message=%q at=%s\n",
-		entry.ID,
-		entry.ServiceID,
-		entry.Level,
-		entry.Message,
-		entry.CreatedAt.Format(time.RFC3339),
-	)
-
-	return nil
+	return s.store.Append(entry)
 }
