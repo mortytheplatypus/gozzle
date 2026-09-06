@@ -12,6 +12,10 @@ func NewLogService(store *Store) *Service {
 	return &Service{store: store}
 }
 
+func (s *Service) Register(serviceID string) error {
+	return s.store.Register(serviceID)
+}
+
 func (s *Service) Append(req AppendLogRequest) error {
 
 	entry := &LogEntry{

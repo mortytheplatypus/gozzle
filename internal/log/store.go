@@ -8,93 +8,164 @@ import (
 )
 
 type Store struct {
-	logPath  string
-	metaPath string
-	nextID   int64
-	wal      *os.File
+	walDir       string
+	registryPath string
+	services     map[string]*serviceState
 }
 
-type metaFile struct {
+type serviceState struct {
+	nextID int64
+	wal    *os.File
+}
+
+type registryFile struct {
+	Services map[string]registryEntry `json:"services"`
+}
+
+type registryEntry struct {
 	NextID int64 `json:"next_id"`
 }
 
 func NewStore(walDir string) (*Store, error) {
+
 	s := &Store{
-		logPath:  filepath.Join(walDir, "wal.log"),
-		metaPath: filepath.Join(walDir, "meta.json"),
-		nextID:   1,
+		walDir:       walDir,
+		registryPath: filepath.Join(walDir, "services.json"),
+		services:     make(map[string]*serviceState),
 	}
-	if err := s.loadMeta(); err != nil {
-		return nil, err
-	}
+
 	if err := os.MkdirAll(walDir, 0o755); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(s.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
+
+	if err := s.loadRegistry(); err != nil {
 		return nil, err
 	}
-	s.wal = f
+
 	return s, nil
 }
 
 func (s *Store) Close() error {
-	if s.wal == nil {
-		return nil
+
+	var firstErr error
+	for id, st := range s.services {
+		if st.wal == nil {
+			continue
+		}
+
+		if err := st.wal.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		st.wal = nil
+		s.services[id] = st
 	}
-	err := s.wal.Close()
-	s.wal = nil
-	return err
+	return firstErr
 }
 
-func (s *Store) loadMeta() error {
+func (s *Store) loadRegistry() error {
 
-	b, err := os.ReadFile(s.metaPath)
+	b, err := os.ReadFile(s.registryPath)
 	if os.IsNotExist(err) {
-		return s.saveMeta()
+		return s.saveRegistry()
 	}
 	if err != nil {
 		return err
 	}
 
-	var m metaFile
-	if err := json.Unmarshal(b, &m); err != nil {
+	var reg registryFile
+	if err := json.Unmarshal(b, &reg); err != nil {
 		return err
 	}
-
-	if m.NextID < 1 {
-		m.NextID = 1
+	if reg.Services == nil {
+		reg.Services = map[string]registryEntry{}
 	}
 
-	s.nextID = m.NextID
-
+	for id, e := range reg.Services {
+		nextID := e.NextID
+		if nextID < 1 {
+			nextID = 1
+		}
+		s.services[id] = &serviceState{nextID: nextID}
+	}
 	return nil
 }
 
-func (s *Store) saveMeta() error {
+func (s *Store) saveRegistry() error {
 
-	if err := os.MkdirAll(filepath.Dir(s.metaPath), 0o755); err != nil {
-		return err
+	reg := registryFile{Services: make(map[string]registryEntry, len(s.services))}
+	for id, st := range s.services {
+		reg.Services[id] = registryEntry{NextID: st.nextID}
 	}
 
-	b, err := json.Marshal(metaFile{NextID: s.nextID})
+	b, err := json.Marshal(reg)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(s.metaPath, append(b, '\n'), 0o644)
+	return os.WriteFile(s.registryPath, append(b, '\n'), 0o644)
 }
 
-func (s *Store) Append(entry *LogEntry) error {
-	entry.ID = s.nextID
+func (s *Store) logPath(serviceID string) string {
+	return filepath.Join(s.walDir, serviceID+".log")
+}
 
-	s.nextID++
-	if err := s.saveMeta(); err != nil {
-		s.nextID--
+func (s *Store) Register(serviceID string) error {
+	if err := ValidateServiceID(serviceID); err != nil {
 		return err
 	}
 
-	if err := json.NewEncoder(s.wal).Encode(entry); err != nil {
+	if _, ok := s.services[serviceID]; ok {
+		return nil
+	}
+
+	s.services[serviceID] = &serviceState{nextID: 1}
+	if err := s.saveRegistry(); err != nil {
+		delete(s.services, serviceID)
+		return err
+	}
+
+	f, err := os.OpenFile(s.logPath(serviceID), os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+
+	return f.Close()
+}
+
+func (s *Store) openWAL(st *serviceState, serviceID string) error {
+	if st.wal != nil {
+		return nil
+	}
+	f, err := os.OpenFile(s.logPath(serviceID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	st.wal = f
+	return nil
+}
+
+func (s *Store) Append(entry *LogEntry) error {
+	if err := ValidateServiceID(entry.ServiceID); err != nil {
+		return err
+	}
+
+	st, ok := s.services[entry.ServiceID]
+	if !ok {
+		return ErrNotRegistered
+	}
+
+	if err := s.openWAL(st, entry.ServiceID); err != nil {
+		return err
+	}
+
+	entry.ID = st.nextID
+	st.nextID++
+	if err := s.saveRegistry(); err != nil {
+		st.nextID--
+		return err
+	}
+
+	if err := json.NewEncoder(st.wal).Encode(entry); err != nil {
 		return err
 	}
 	return nil
@@ -102,7 +173,15 @@ func (s *Store) Append(entry *LogEntry) error {
 
 func (s *Store) Read(serviceID string, offset int64) ([]LogEntry, error) {
 
-	f, err := os.Open(s.logPath)
+	if err := ValidateServiceID(serviceID); err != nil {
+		return nil, err
+	}
+
+	if _, ok := s.services[serviceID]; !ok {
+		return nil, ErrNotRegistered
+	}
+
+	f, err := os.Open(s.logPath(serviceID))
 	if os.IsNotExist(err) {
 		return []LogEntry{}, nil
 	}
@@ -124,8 +203,7 @@ func (s *Store) Read(serviceID string, offset int64) ([]LogEntry, error) {
 		if err := json.Unmarshal(line, &e); err != nil {
 			return nil, err
 		}
-
-		if e.ServiceID != serviceID || e.ID < offset {
+		if e.ID < offset {
 			continue
 		}
 

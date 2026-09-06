@@ -2,6 +2,7 @@ package log
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 )
@@ -16,8 +17,39 @@ type AppendLogRequest struct {
 	Level     string `json:"level"`
 }
 
+type RegisterServiceRequest struct {
+	ServiceID string `json:"service_id"`
+}
+
 func NewLogHandler(service *Service) *Handler {
 	return &Handler{service: service}
+}
+
+func writeStoreError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrInvalidServiceID):
+		http.Error(w, "Invalid service_id", http.StatusBadRequest)
+	case errors.Is(err, ErrNotRegistered):
+		http.Error(w, "Service not registered", http.StatusNotFound)
+	default:
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
+
+	var req RegisterServiceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.service.Register(req.ServiceID); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) Append(w http.ResponseWriter, r *http.Request) {
@@ -25,12 +57,15 @@ func (h *Handler) Append(w http.ResponseWriter, r *http.Request) {
 	var req AppendLogRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Bad request body", http.StatusBadRequest)
+		return
 	}
 
 	if err := h.service.Append(req); err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
+		return
 	}
 
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) Read(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +88,7 @@ func (h *Handler) Read(w http.ResponseWriter, r *http.Request) {
 
 	entries, err := h.service.Read(serviceID, offset)
 	if err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 
