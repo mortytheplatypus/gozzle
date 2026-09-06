@@ -26,11 +26,11 @@ type registryEntry struct {
 	NextID int64 `json:"next_id"`
 }
 
-func NewStore(walDir string) (*Store, error) {
+func NewStore(walDir, servicesFile string) (*Store, error) {
 
 	s := &Store{
 		walDir:       walDir,
-		registryPath: filepath.Join(walDir, "services.json"),
+		registryPath: filepath.Join(walDir, filepath.Base(servicesFile)),
 		services:     make(map[string]*serviceState),
 	}
 

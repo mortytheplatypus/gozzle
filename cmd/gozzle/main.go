@@ -10,7 +10,7 @@ import (
 func main() {
 
 	cfg := config.Load()
-	log.Printf("config: listen=%s wal-dir=%s", cfg.ListenAddr, cfg.WALDir)
+	log.Printf("config: listen=%s wal-dir=%s services-file=%s ingest-queue=%d", cfg.ListenAddr, cfg.WALDir, cfg.ServicesFile, cfg.IngestQueue)
 
 	srv, err := server.New(cfg)
 	if err != nil {

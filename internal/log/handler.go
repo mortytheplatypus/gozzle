@@ -31,6 +31,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		http.Error(w, "Invalid service_id", http.StatusBadRequest)
 	case errors.Is(err, ErrNotRegistered):
 		http.Error(w, "Service not registered", http.StatusNotFound)
+	case errors.Is(err, ErrBusy):
+		http.Error(w, "Ingestion queue full", http.StatusServiceUnavailable)
 	default:
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}

@@ -9,13 +9,13 @@ import (
 )
 
 type Server struct {
-	http  *http.Server
-	store *log.Store
+	http    *http.Server
+	store   *log.Store
 }
 
 func New(cfg *config.Config) (*Server, error) {
 
-	store, err := log.NewStore(cfg.WALDir)
+	store, err := log.NewStore(cfg.WALDir, cfg.ServicesFile)
 	if err != nil {
 		return nil, err
 	}

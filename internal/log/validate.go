@@ -8,6 +8,7 @@ import (
 var (
 	ErrInvalidServiceID = errors.New("invalid service id")
 	ErrNotRegistered    = errors.New("service not registered")
+	ErrBusy             = errors.New("ingestion queue full")
 )
 
 var serviceIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
