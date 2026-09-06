@@ -27,6 +27,7 @@ func New(cfg *config.Config) (*Server, error) {
 
 	mux.HandleFunc("GET /api/health", health)
 	mux.HandleFunc("POST /api/logs", logHandler.Append)
+	mux.HandleFunc("GET /api/logs", logHandler.Read)
 
 	return &Server{
 		http: &http.Server{

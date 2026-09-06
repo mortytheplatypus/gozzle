@@ -1,6 +1,7 @@
 package log
 
 import (
+	"bufio"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -97,4 +98,39 @@ func (s *Store) Append(entry *LogEntry) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Store) Read(serviceID string, offset int64) ([]LogEntry, error) {
+
+	f, err := os.Open(s.logPath)
+	if os.IsNotExist(err) {
+		return []LogEntry{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	out := []LogEntry{}
+	sc := bufio.NewScanner(f)
+
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var e LogEntry
+		if err := json.Unmarshal(line, &e); err != nil {
+			return nil, err
+		}
+
+		if e.ServiceID != serviceID || e.ID < offset {
+			continue
+		}
+
+		out = append(out, e)
+	}
+
+	return out, sc.Err()
 }

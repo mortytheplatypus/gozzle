@@ -23,3 +23,7 @@ func (s *Service) Append(req AppendLogRequest) error {
 
 	return s.store.Append(entry)
 }
+
+func (s *Service) Read(serviceID string, offset int64) ([]LogEntry, error) {
+	return s.store.Read(serviceID, offset)
+}
