@@ -16,10 +16,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("server: %v", err)
 	}
+	defer srv.Close()
 
 	log.Printf("server: listening on %s", cfg.ListenAddr)
 
 	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("server: %v", err)
+		log.Printf("server: %v", err)
 	}
 }

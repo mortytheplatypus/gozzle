@@ -9,7 +9,8 @@ import (
 )
 
 type Server struct {
-	http *http.Server
+	http  *http.Server
+	store *log.Store
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -32,12 +33,17 @@ func New(cfg *config.Config) (*Server, error) {
 			Addr:    cfg.ListenAddr,
 			Handler: mux,
 		},
+		store: store,
 	}, nil
 
 }
 
 func (s *Server) ListenAndServe() error {
 	return s.http.ListenAndServe()
+}
+
+func (s *Server) Close() error {
+	return s.store.Close()
 }
 
 func health(w http.ResponseWriter, _ *http.Request) {

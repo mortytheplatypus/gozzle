@@ -10,6 +10,7 @@ type Store struct {
 	logPath  string
 	metaPath string
 	nextID   int64
+	wal      *os.File
 }
 
 type metaFile struct {
@@ -25,7 +26,24 @@ func NewStore(walDir string) (*Store, error) {
 	if err := s.loadMeta(); err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(walDir, 0o755); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(s.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	s.wal = f
 	return s, nil
+}
+
+func (s *Store) Close() error {
+	if s.wal == nil {
+		return nil
+	}
+	err := s.wal.Close()
+	s.wal = nil
+	return err
 }
 
 func (s *Store) loadMeta() error {
@@ -67,17 +85,6 @@ func (s *Store) saveMeta() error {
 }
 
 func (s *Store) Append(entry *LogEntry) error {
-
-	if err := os.MkdirAll(filepath.Dir(s.logPath), 0o755); err != nil {
-		return err
-	}
-
-	f, err := os.OpenFile(s.logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
 	entry.ID = s.nextID
 
 	s.nextID++
@@ -86,7 +93,7 @@ func (s *Store) Append(entry *LogEntry) error {
 		return err
 	}
 
-	if err := json.NewEncoder(f).Encode(entry); err != nil {
+	if err := json.NewEncoder(s.wal).Encode(entry); err != nil {
 		return err
 	}
 	return nil
