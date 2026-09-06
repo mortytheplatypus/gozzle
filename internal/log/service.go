@@ -10,47 +10,105 @@ type appendJob struct {
 	result chan error
 }
 
-type Service struct {
-	store  *Store
+type serviceWorker struct {
 	ingest chan appendJob
-	wg     sync.WaitGroup
+}
+
+type Service struct {
+	store     *Store
+	queueSize int
+
+	mu      sync.Mutex
+	closed  bool
+	workers map[string]*serviceWorker
+	wg      sync.WaitGroup
 }
 
 func NewLogService(store *Store, queueSize int) *Service {
-
 	if queueSize < 1 {
 		queueSize = 1
 	}
-
-	s := &Service{
-		store:  store,
-		ingest: make(chan appendJob, queueSize),
+	return &Service{
+		store:     store,
+		queueSize: queueSize,
+		workers:   make(map[string]*serviceWorker),
 	}
-
-	s.wg.Add(1)
-
-	go s.worker()
-
-	return s
 }
 
-func (s *Service) worker() {
-
+func (s *Service) worker(w *serviceWorker) {
 	defer s.wg.Done()
-
-	for job := range s.ingest {
+	for job := range w.ingest {
 		job.result <- s.store.Append(job.entry)
 	}
 }
 
+func (s *Service) startWorkerLocked(serviceID string) *serviceWorker {
+
+	if w, ok := s.workers[serviceID]; ok {
+		return w
+	}
+
+	w := &serviceWorker{ingest: make(chan appendJob, s.queueSize)}
+	s.workers[serviceID] = w
+
+	s.wg.Add(1)
+	go s.worker(w)
+
+	return w
+}
+
+func (s *Service) workerFor(serviceID string) (*serviceWorker, error) {
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return nil, ErrBusy
+	}
+
+	if w, ok := s.workers[serviceID]; ok {
+		return w, nil
+	}
+
+	if !s.store.IsRegistered(serviceID) {
+		return nil, ErrNotRegistered
+	}
+
+	return s.startWorkerLocked(serviceID), nil
+}
+
 func (s *Service) Close() error {
-	close(s.ingest)
+
+	s.mu.Lock()
+
+	s.closed = true
+	for id, w := range s.workers {
+		close(w.ingest)
+		delete(s.workers, id)
+	}
+
+	s.mu.Unlock()
+
 	s.wg.Wait()
 	return s.store.Close()
 }
 
 func (s *Service) Register(serviceID string) error {
-	return s.store.Register(serviceID)
+
+	if err := s.store.Register(serviceID); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return nil
+	}
+
+	s.startWorkerLocked(serviceID)
+
+	return nil
 }
 
 func (s *Service) Append(req AppendLogRequest) error {
@@ -61,6 +119,11 @@ func (s *Service) Append(req AppendLogRequest) error {
 
 	if !s.store.IsRegistered(req.ServiceID) {
 		return ErrNotRegistered
+	}
+
+	w, err := s.workerFor(req.ServiceID)
+	if err != nil {
+		return err
 	}
 
 	entry := &LogEntry{
@@ -76,7 +139,7 @@ func (s *Service) Append(req AppendLogRequest) error {
 	}
 
 	select {
-	case s.ingest <- job:
+	case w.ingest <- job:
 	default:
 		return ErrBusy
 	}

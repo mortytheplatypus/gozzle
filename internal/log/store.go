@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type Store struct {
 	walDir       string
 	registryPath string
+	mu           sync.Mutex
 	services     map[string]*serviceState
 }
 
@@ -46,6 +48,8 @@ func NewStore(walDir, servicesFile string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	var firstErr error
 	for id, st := range s.services {
@@ -110,6 +114,8 @@ func (s *Store) logPath(serviceID string) string {
 }
 
 func (s *Store) IsRegistered(serviceID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, ok := s.services[serviceID]
 	return ok
 }
@@ -118,6 +124,9 @@ func (s *Store) Register(serviceID string) error {
 	if err := ValidateServiceID(serviceID); err != nil {
 		return err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if _, ok := s.services[serviceID]; ok {
 		return nil
@@ -154,6 +163,9 @@ func (s *Store) Append(entry *LogEntry) error {
 		return err
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	st, ok := s.services[entry.ServiceID]
 	if !ok {
 		return ErrNotRegistered
@@ -182,7 +194,10 @@ func (s *Store) Read(serviceID string, offset int64) ([]LogEntry, error) {
 		return nil, err
 	}
 
-	if _, ok := s.services[serviceID]; !ok {
+	s.mu.Lock()
+	_, ok := s.services[serviceID]
+	s.mu.Unlock()
+	if !ok {
 		return nil, ErrNotRegistered
 	}
 
