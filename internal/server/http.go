@@ -10,7 +10,7 @@ import (
 
 type Server struct {
 	http    *http.Server
-	store   *log.Store
+	service *log.Service
 }
 
 func New(cfg *config.Config) (*Server, error) {
@@ -20,7 +20,7 @@ func New(cfg *config.Config) (*Server, error) {
 		return nil, err
 	}
 
-	logService := log.NewLogService(store)
+	logService := log.NewLogService(store, cfg.IngestQueue)
 	logHandler := log.NewLogHandler(logService)
 
 	mux := http.NewServeMux()
@@ -35,7 +35,7 @@ func New(cfg *config.Config) (*Server, error) {
 			Addr:    cfg.ListenAddr,
 			Handler: mux,
 		},
-		store: store,
+		service: logService,
 	}, nil
 
 }
@@ -45,7 +45,7 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) Close() error {
-	return s.store.Close()
+	return s.service.Close()
 }
 
 func health(w http.ResponseWriter, _ *http.Request) {

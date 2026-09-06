@@ -109,6 +109,11 @@ func (s *Store) logPath(serviceID string) string {
 	return filepath.Join(s.walDir, serviceID+".log")
 }
 
+func (s *Store) IsRegistered(serviceID string) bool {
+	_, ok := s.services[serviceID]
+	return ok
+}
+
 func (s *Store) Register(serviceID string) error {
 	if err := ValidateServiceID(serviceID); err != nil {
 		return err
