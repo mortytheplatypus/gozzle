@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -44,6 +45,12 @@ func (s *Server) ListenAndServe() error {
 	return s.http.ListenAndServe()
 }
 
+// Shutdown stops accepting connections and waits for in-flight requests to finish.
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.http.Shutdown(ctx)
+}
+
+// Close drains ingest workers and closes WAL file descriptors.
 func (s *Server) Close() error {
 	return s.service.Close()
 }
