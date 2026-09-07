@@ -17,7 +17,9 @@ import (
 func main() {
 
 	cfg := config.Load()
-	log.Printf("config: listen=%s wal-dir=%s services-file=%s ingest-queue=%d", cfg.ListenAddr, cfg.WALDir, cfg.ServicesFile, cfg.IngestQueue)
+
+	log.Printf("config: listen=%s wal-dir=%s services-file=%s ingest-queue=%d wal-max-bytes=%d retention-days=%d",
+		cfg.ListenAddr, cfg.WALDir, cfg.ServicesFile, cfg.IngestQueue, cfg.WALMaxBytes, cfg.RetentionDays)
 
 	srv, err := server.New(cfg)
 	if err != nil {

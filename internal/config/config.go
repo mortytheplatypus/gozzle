@@ -8,13 +8,22 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const defaultIngestQueue = 256
+const (
+	defaultListenAddr    = ":8080"
+	defaultWALDir        = "./data/wal"
+	defaultServicesFile  = "services.json"
+	defaultIngestQueue   = 256
+	defaultWALMaxBytes   = 10 * 1024 * 1024 // 10 MiB
+	defaultRetentionDays = 3
+)
 
 type Config struct {
-	ListenAddr   string
-	WALDir       string
-	ServicesFile string
-	IngestQueue  int
+	ListenAddr    string
+	WALDir        string
+	ServicesFile  string
+	IngestQueue   int
+	WALMaxBytes   int
+	RetentionDays int
 }
 
 func Load() *Config {
@@ -22,10 +31,12 @@ func Load() *Config {
 	loadDotEnv()
 
 	return &Config{
-		ListenAddr:   envOrDefault("GOZZLE_LISTEN", ":8080"),
-		WALDir:       envOrDefault("GOZZLE_WAL_DIR", "./data/wal"),
-		ServicesFile: envOrDefault("GOZZLE_SERVICES_FILE", "services.json"),
-		IngestQueue:  envIntOrDefault("GOZZLE_INGEST_QUEUE", defaultIngestQueue),
+		ListenAddr:    envOrDefault("GOZZLE_LISTEN", defaultListenAddr),
+		WALDir:        envOrDefault("GOZZLE_WAL_DIR", defaultWALDir),
+		ServicesFile:  envOrDefault("GOZZLE_SERVICES_FILE", defaultServicesFile),
+		IngestQueue:   envIntOrDefault("GOZZLE_INGEST_QUEUE", defaultIngestQueue),
+		WALMaxBytes:   envIntOrDefault("GOZZLE_WAL_MAX_BYTES", defaultWALMaxBytes),
+		RetentionDays: envIntOrDefault("GOZZLE_RETENTION_DAYS", defaultRetentionDays),
 	}
 }
 
