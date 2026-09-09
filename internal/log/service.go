@@ -21,6 +21,7 @@ type Service struct {
 	mu      sync.Mutex
 	closed  bool
 	workers map[string]*serviceWorker
+	subs    map[string]map[chan LogEntry]struct{}
 	wg      sync.WaitGroup
 }
 
@@ -32,13 +33,18 @@ func NewLogService(store *Store, queueSize int) *Service {
 		store:     store,
 		queueSize: queueSize,
 		workers:   make(map[string]*serviceWorker),
+		subs:      make(map[string]map[chan LogEntry]struct{}),
 	}
 }
 
 func (s *Service) worker(w *serviceWorker) {
 	defer s.wg.Done()
 	for job := range w.ingest {
-		job.result <- s.store.Append(job.entry)
+		err := s.store.Append(job.entry)
+		if err == nil {
+			s.broadcast(job.entry.ServiceID, *job.entry)
+		}
+		job.result <- err
 	}
 }
 
@@ -77,6 +83,71 @@ func (s *Service) workerFor(serviceID string) (*serviceWorker, error) {
 	return s.startWorkerLocked(serviceID), nil
 }
 
+func (s *Service) broadcast(serviceID string, entry LogEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for ch := range s.subs[serviceID] {
+		select {
+		case ch <- entry:
+		default:
+			// drop if subscriber is slow
+		}
+	}
+}
+
+func (s *Service) Subscribe(serviceID string) (<-chan LogEntry, func(), error) {
+
+	if err := ValidateServiceID(serviceID); err != nil {
+		return nil, nil, err
+	}
+
+	if !s.store.IsRegistered(serviceID) {
+		return nil, nil, ErrNotRegistered
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return nil, nil, ErrBusy
+	}
+
+	ch := make(chan LogEntry, s.queueSize)
+	if s.subs[serviceID] == nil {
+		s.subs[serviceID] = make(map[chan LogEntry]struct{})
+	}
+	s.subs[serviceID][ch] = struct{}{}
+
+	var once sync.Once
+	unsub := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if set, ok := s.subs[serviceID]; ok {
+				if _, ok := set[ch]; ok {
+					delete(set, ch)
+					close(ch)
+				}
+				if len(set) == 0 {
+					delete(s.subs, serviceID)
+				}
+			}
+		})
+	}
+
+	return ch, unsub, nil
+}
+
+func (s *Service) closeSubscribersLocked() {
+	for id, set := range s.subs {
+		for ch := range set {
+			close(ch)
+		}
+		delete(s.subs, id)
+	}
+}
+
 func (s *Service) Close() error {
 
 	s.mu.Lock()
@@ -90,6 +161,11 @@ func (s *Service) Close() error {
 	s.mu.Unlock()
 
 	s.wg.Wait()
+
+	s.mu.Lock()
+	s.closeSubscribersLocked()
+	s.mu.Unlock()
+
 	return s.store.Close()
 }
 
@@ -149,4 +225,8 @@ func (s *Service) Append(req AppendLogRequest) error {
 
 func (s *Service) Read(serviceID string, offset int64) ([]LogEntry, error) {
 	return s.store.Read(serviceID, offset)
+}
+
+func (s *Service) NextID(serviceID string) (int64, error) {
+	return s.store.NextID(serviceID)
 }
