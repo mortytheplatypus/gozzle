@@ -3,21 +3,32 @@ package log
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 )
 
+const dayLayout = "20060102"
+
 type Store struct {
-	walDir       string
-	registryPath string
-	mu           sync.Mutex
-	services     map[string]*serviceState
+	walDir        string
+	registryPath  string
+	maxBytes      int64
+	retentionDays int
+	mu            sync.Mutex
+	services      map[string]*serviceState
 }
 
 type serviceState struct {
 	nextID int64
 	wal    *os.File
+	size   int64
+	day    string
 }
 
 type registryFile struct {
@@ -28,12 +39,20 @@ type registryEntry struct {
 	NextID int64 `json:"next_id"`
 }
 
-func NewStore(walDir, servicesFile string) (*Store, error) {
+type logSegment struct {
+	path string
+	day  string
+	seq  int // -1 active; 0 = .YYYYMMDD; 1+ = .YYYYMMDD.N
+}
+
+func NewStore(walDir, servicesFile string, maxBytes int, retentionDays int) (*Store, error) {
 
 	s := &Store{
-		walDir:       walDir,
-		registryPath: filepath.Join(walDir, filepath.Base(servicesFile)),
-		services:     make(map[string]*serviceState),
+		walDir:        walDir,
+		registryPath:  filepath.Join(walDir, filepath.Base(servicesFile)),
+		maxBytes:      int64(maxBytes),
+		retentionDays: retentionDays,
+		services:      make(map[string]*serviceState),
 	}
 
 	if err := os.MkdirAll(walDir, 0o755); err != nil {
@@ -41,6 +60,10 @@ func NewStore(walDir, servicesFile string) (*Store, error) {
 	}
 
 	if err := s.loadRegistry(); err != nil {
+		return nil, err
+	}
+
+	if err := s.applyRetention(); err != nil {
 		return nil, err
 	}
 
@@ -52,16 +75,16 @@ func (s *Store) Close() error {
 	defer s.mu.Unlock()
 
 	var firstErr error
-	for id, st := range s.services {
-		if st.wal == nil {
+	for id, serviceState := range s.services {
+		if serviceState.wal == nil {
 			continue
 		}
 
-		if err := st.wal.Close(); err != nil && firstErr == nil {
+		if err := serviceState.wal.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		st.wal = nil
-		s.services[id] = st
+		serviceState.wal = nil
+		s.services[id] = serviceState
 	}
 	return firstErr
 }
@@ -97,8 +120,8 @@ func (s *Store) loadRegistry() error {
 func (s *Store) saveRegistry() error {
 
 	reg := registryFile{Services: make(map[string]registryEntry, len(s.services))}
-	for id, st := range s.services {
-		reg.Services[id] = registryEntry{NextID: st.nextID}
+	for id, serviceState := range s.services {
+		reg.Services[id] = registryEntry{NextID: serviceState.nextID}
 	}
 
 	b, err := json.Marshal(reg)
@@ -146,19 +169,190 @@ func (s *Store) Register(serviceID string) error {
 	return f.Close()
 }
 
-func (s *Store) openWAL(st *serviceState, serviceID string) error {
-	if st.wal != nil {
+func (s *Store) openWAL(serviceState *serviceState, serviceID string) error {
+
+	if serviceState.wal != nil {
 		return nil
 	}
 	f, err := os.OpenFile(s.logPath(serviceID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
-	st.wal = f
+
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return err
+	}
+
+	serviceState.wal = f
+	serviceState.size = info.Size()
+	if serviceState.day == "" {
+		serviceState.day = info.ModTime().Format(dayLayout)
+	}
+
 	return nil
 }
 
+func (s *Store) nextRotatedPath(serviceID, day string) string {
+
+	base := filepath.Join(s.walDir, serviceID+".log."+day)
+	if _, err := os.Stat(base); os.IsNotExist(err) {
+		return base
+	}
+
+	for n := 1; ; n++ {
+		p := fmt.Sprintf("%s.%d", base, n)
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			return p
+		}
+	}
+}
+
+func (s *Store) rotate(serviceState *serviceState, serviceID, day string) error {
+
+	if serviceState.wal == nil || serviceState.size == 0 {
+		serviceState.day = time.Now().Format(dayLayout)
+		return nil
+	}
+
+	if err := serviceState.wal.Close(); err != nil {
+		return err
+	}
+	serviceState.wal = nil
+
+	if err := os.Rename(s.logPath(serviceID), s.nextRotatedPath(serviceID, day)); err != nil {
+		return err
+	}
+
+	if err := s.openWAL(serviceState, serviceID); err != nil {
+		return err
+	}
+	serviceState.day = time.Now().Format(dayLayout)
+	serviceState.size = 0
+
+	return s.applyRetention()
+}
+
+func (s *Store) maybeRotate(serviceState *serviceState, serviceID string) error {
+
+	today := time.Now().Format(dayLayout)
+	if serviceState.day != today {
+		if err := s.rotate(serviceState, serviceID, serviceState.day); err != nil {
+			return err
+		}
+	}
+
+	if serviceState.size >= s.maxBytes {
+		return s.rotate(serviceState, serviceID, serviceState.day)
+	}
+
+	return nil
+}
+
+func (s *Store) applyRetention() error {
+
+	cutoffDay := time.Now().AddDate(0, 0, -s.retentionDays).Format(dayLayout)
+
+	entries, err := os.ReadDir(s.walDir)
+	if err != nil {
+		return err
+	}
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		seg, ok := parseRotatedName(e.Name())
+		if !ok || seg.day >= cutoffDay {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.walDir, e.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// parseRotatedName matches foo.log.YYYYMMDD or foo.log.YYYYMMDD.N (not active foo.log).
+func parseRotatedName(name string) (logSegment, bool) {
+
+	parts := strings.Split(name, ".")
+	if len(parts) < 3 || len(parts) > 4 || parts[1] != "log" {
+		return logSegment{}, false
+	}
+
+	day := parts[2]
+	if _, err := time.Parse(dayLayout, day); err != nil {
+		return logSegment{}, false
+	}
+
+	seg := logSegment{path: name, day: day, seq: 0}
+	if len(parts) == 4 {
+		n, err := strconv.Atoi(parts[3])
+		if err != nil || n < 1 {
+			return logSegment{}, false
+		}
+		seg.seq = n
+	}
+
+	return seg, true
+}
+
+func (s *Store) listLogSegments(serviceID string) ([]logSegment, error) {
+
+	prefix := serviceID + ".log"
+	entries, err := os.ReadDir(s.walDir)
+	if err != nil {
+		return nil, err
+	}
+
+	var segments []logSegment
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name != prefix && !strings.HasPrefix(name, prefix+".") {
+			continue
+		}
+		if name == prefix {
+			segments = append(segments, logSegment{path: filepath.Join(s.walDir, name), seq: -1})
+			continue
+		}
+		segment, ok := parseRotatedName(name)
+		if !ok {
+			continue
+		}
+		segment.path = filepath.Join(s.walDir, name)
+		segments = append(segments, segment)
+	}
+
+	sort.Slice(segments, func(i, j int) bool { return shouldReadBefore(segments[i], segments[j]) })
+
+	return segments, nil
+}
+
+func shouldReadBefore(a, b logSegment) bool {
+
+	if a.seq < 0 {
+		return false
+	}
+
+	if b.seq < 0 {
+		return true
+	}
+
+	if a.day != b.day {
+		return a.day < b.day
+	}
+
+	return a.seq < b.seq
+}
+
 func (s *Store) Append(entry *LogEntry) error {
+
 	if err := ValidateServiceID(entry.ServiceID); err != nil {
 		return err
 	}
@@ -166,25 +360,36 @@ func (s *Store) Append(entry *LogEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	st, ok := s.services[entry.ServiceID]
+	serviceState, ok := s.services[entry.ServiceID]
 	if !ok {
 		return ErrNotRegistered
 	}
 
-	if err := s.openWAL(st, entry.ServiceID); err != nil {
+	if err := s.openWAL(serviceState, entry.ServiceID); err != nil {
 		return err
 	}
 
-	entry.ID = st.nextID
-	st.nextID++
+	if err := s.maybeRotate(serviceState, entry.ServiceID); err != nil {
+		return err
+	}
+
+	entry.ID = serviceState.nextID
+	serviceState.nextID++
 	if err := s.saveRegistry(); err != nil {
-		st.nextID--
+		serviceState.nextID--
 		return err
 	}
 
-	if err := json.NewEncoder(st.wal).Encode(entry); err != nil {
+	b, err := json.Marshal(entry)
+	if err != nil {
 		return err
 	}
+	b = append(b, '\n')
+
+	if _, err := serviceState.wal.Write(b); err != nil {
+		return err
+	}
+	serviceState.size += int64(len(b))
 	return nil
 }
 
@@ -201,9 +406,27 @@ func (s *Store) Read(serviceID string, offset int64) ([]LogEntry, error) {
 		return nil, ErrNotRegistered
 	}
 
-	f, err := os.Open(s.logPath(serviceID))
+	segments, err := s.listLogSegments(serviceID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := []LogEntry{}
+	for _, segment := range segments {
+		part, err := readLogFile(segment.path, offset)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
+
+func readLogFile(path string, offset int64) ([]LogEntry, error) {
+
+	f, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return []LogEntry{}, nil
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err

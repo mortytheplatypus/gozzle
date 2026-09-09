@@ -16,7 +16,7 @@ type Server struct {
 
 func New(cfg *config.Config) (*Server, error) {
 
-	store, err := log.NewStore(cfg.WALDir, cfg.ServicesFile)
+	store, err := log.NewStore(cfg.WALDir, cfg.ServicesFile, cfg.WALMaxBytes, cfg.RetentionDays)
 	if err != nil {
 		return nil, err
 	}
