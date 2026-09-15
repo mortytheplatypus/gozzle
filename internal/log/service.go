@@ -1,6 +1,7 @@
 package log
 
 import (
+	"log"
 	"sync"
 	"time"
 )
@@ -18,10 +19,11 @@ type Service struct {
 	store     *Store
 	queueSize int
 
-	mu      sync.Mutex
-	closed  bool
-	workers map[string]*serviceWorker
-	wg      sync.WaitGroup
+	mu          sync.Mutex
+	closed      bool
+	workers     map[string]*serviceWorker
+	subscribers map[string]map[chan LogEntry]struct{}
+	wg          sync.WaitGroup
 }
 
 func NewLogService(store *Store, queueSize int) *Service {
@@ -29,16 +31,21 @@ func NewLogService(store *Store, queueSize int) *Service {
 		queueSize = 1
 	}
 	return &Service{
-		store:     store,
-		queueSize: queueSize,
-		workers:   make(map[string]*serviceWorker),
+		store:       store,
+		queueSize:   queueSize,
+		workers:     make(map[string]*serviceWorker),
+		subscribers: make(map[string]map[chan LogEntry]struct{}),
 	}
 }
 
 func (s *Service) worker(w *serviceWorker) {
 	defer s.wg.Done()
 	for job := range w.ingest {
-		job.result <- s.store.Append(job.entry)
+		err := s.store.Append(job.entry)
+		if err == nil {
+			s.broadcast(job.entry.ServiceID, *job.entry)
+		}
+		job.result <- err
 	}
 }
 
@@ -77,6 +84,72 @@ func (s *Service) workerFor(serviceID string) (*serviceWorker, error) {
 	return s.startWorkerLocked(serviceID), nil
 }
 
+func (s *Service) broadcast(serviceID string, entry LogEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for ch := range s.subscribers[serviceID] {
+		select {
+		case ch <- entry:
+		default:
+			log.Println("subscriber is slow, dropping message")
+		}
+	}
+}
+
+func (s *Service) Subscribe(serviceID string) (<-chan LogEntry, func(), error) {
+
+	if err := ValidateServiceID(serviceID); err != nil {
+		return nil, nil, err
+	}
+
+	if !s.store.IsRegistered(serviceID) {
+		return nil, nil, ErrNotRegistered
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return nil, nil, ErrBusy
+	}
+
+	ch := make(chan LogEntry, s.queueSize)
+	if s.subscribers[serviceID] == nil {
+		s.subscribers[serviceID] = make(map[chan LogEntry]struct{})
+	}
+	s.subscribers[serviceID][ch] = struct{}{}
+
+	// unsubscribe function is called only once to avoid race conditions
+	var once sync.Once
+	unsub := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if set, ok := s.subscribers[serviceID]; ok {
+				if _, ok := set[ch]; ok {
+					delete(set, ch)
+					close(ch)
+				}
+				if len(set) == 0 {
+					delete(s.subscribers, serviceID)
+				}
+			}
+		})
+	}
+
+	return ch, unsub, nil
+}
+
+func (s *Service) closeSubscribersLocked() {
+	for id, set := range s.subscribers {
+		for ch := range set {
+			close(ch)
+		}
+		delete(s.subscribers, id)
+	}
+}
+
 func (s *Service) Close() error {
 
 	s.mu.Lock()
@@ -90,6 +163,11 @@ func (s *Service) Close() error {
 	s.mu.Unlock()
 
 	s.wg.Wait()
+
+	s.mu.Lock()
+	s.closeSubscribersLocked()
+	s.mu.Unlock()
+
 	return s.store.Close()
 }
 
@@ -149,4 +227,8 @@ func (s *Service) Append(req AppendLogRequest) error {
 
 func (s *Service) Read(serviceID string, offset int64) ([]LogEntry, error) {
 	return s.store.Read(serviceID, offset)
+}
+
+func (s *Service) NextID(serviceID string) (int64, error) {
+	return s.store.NextID(serviceID)
 }

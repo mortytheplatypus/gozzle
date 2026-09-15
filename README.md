@@ -1,20 +1,21 @@
 # gozzle
 
-HTTP log pipe in Go. Register a `service_id`, append NDJSON (Newline-Delimited JSON) lines to a per-service WAL, read back by inclusive ID offset. Ingest is async per service (bounded queue + worker); durable before `200`.
+HTTP log pipe in Go. Register a `service_id`, append NDJSON (Newline-Delimited JSON) lines to a per-service WAL, read back by inclusive ID offset, or live-tail via SSE. Ingest is async per service (bounded queue + worker); durable before `200`.
 
 ```
 POST /api/services  →  services.json + {id}.log
 POST /api/logs      →  per-service queue → worker → {id}.log
 GET  /api/logs      →  scan {id}.log (ID >= offset)
+GET  /api/logs/stream → SSE live tail (after durable append)
 ```
 
 Module: `github.com/mortytheplatypus/gozzle`
 
 ## Status
 
-Done through **ingest backpressure** (per-service workers, `503` when that service’s queue is full).
+Done through **SSE live stream** (`GET /api/logs/stream`). Rotation + retention included. Dedup deferred.
 
-**Next:** graceful shutdown (SIGTERM → drain queues → close FDs). Auth not implemented.
+**Next:** stats + CLI client. Auth not implemented.
 
 ## Run
 
@@ -31,6 +32,8 @@ go run ./cmd/gozzle
 | `GOZZLE_WAL_DIR` | `./data/wal` | WAL + registry directory |
 | `GOZZLE_SERVICES_FILE` | `services.json` | Filename only; joined under `WAL_DIR` |
 | `GOZZLE_INGEST_QUEUE` | `256` | Per-`service_id` channel capacity |
+| `GOZZLE_WAL_MAX_BYTES` | `10485760` | Rotate active `{id}.log` when size ≥ this |
+| `GOZZLE_RETENTION_DAYS` | `3` | Delete rotated segments older than N days |
 
 ## API
 
@@ -40,6 +43,7 @@ go run ./cmd/gozzle
 | `POST` | `/api/services` | Body `{"service_id":"..."}`; idempotent |
 | `POST` | `/api/logs` | Body `{"service_id","message","level"}`; `200` after WAL write |
 | `GET` | `/api/logs` | Query `service_id` (required), `offset` (default `0`, inclusive) |
+| `GET` | `/api/logs/stream` | SSE; `service_id` required; `offset` optional (default = next ID / from now) |
 
 **`service_id`:** `^[a-z][a-z0-9_-]{0,63}$`. Reserved: `services` → `400`.
 
@@ -62,6 +66,12 @@ curl -X POST localhost:9090/api/logs \
   -d '{"service_id":"foo","level":"INFO","message":"hi"}'
 
 curl 'localhost:9090/api/logs?service_id=foo&offset=1'
+
+# live tail (use -N); default starts from now — no history
+curl -N 'localhost:9090/api/logs/stream?service_id=foo'
+
+# catch up from offset then continue live
+curl -N 'localhost:9090/api/logs/stream?service_id=foo&offset=1'
 ```
 
 ## Storage
@@ -93,16 +103,23 @@ Example `services.json`:
 - `POST /api/logs` does a **non-blocking** enqueue to that service’s channel:
   - full → `503` (`ErrBusy`) — backpressure is **per service**, not global
   - accepted → HTTP goroutine **blocks on a per-job result chan** until the worker finishes `Store.Append` (`200` ⇒ durable)
-- Worker loop: receive job → `Store.Append` → send error/nil on `result`.
+- Worker loop: receive job → `Store.Append` → broadcast to SSE subscribers → send error/nil on `result`.
 - Different services = different workers (can progress in parallel). Same service = serial writes.
 - `Store` mutex protects the registry map / `services.json` when workers run concurrently.
 - Write FDs for `{id}.log` are lazy-opened on first append; closed when all workers drain on `Close`.
+
+### SSE stream
+
+- `GET /api/logs/stream` fans out **after** durable WAL write (same moment POST would get `200`).
+- No `offset` → start at `next_id` (live only). With `offset` → catch up via Read, then live.
+- Slow subscribers: buffered chan; events dropped if full (ingest never blocks on streams).
+- Client disconnect / server `Shutdown` cancel the request context and unsubscribe.
 
 ## Layout
 
 ```
 cmd/gozzle/            # main
 internal/config/       # env
-internal/log/          # handler → service (per-service queues/workers) → store
+internal/log/          # handler → service (queues/workers/SSE) → store
 internal/server/       # mux + wiring
 ```

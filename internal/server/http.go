@@ -30,6 +30,7 @@ func New(cfg *config.Config) (*Server, error) {
 	mux.HandleFunc("POST /api/services", logHandler.Register)
 	mux.HandleFunc("POST /api/logs", logHandler.Append)
 	mux.HandleFunc("GET /api/logs", logHandler.Read)
+	mux.HandleFunc("GET /api/logs/stream", logHandler.Stream)
 
 	return &Server{
 		http: &http.Server{

@@ -393,6 +393,23 @@ func (s *Store) Append(entry *LogEntry) error {
 	return nil
 }
 
+func (s *Store) NextID(serviceID string) (int64, error) {
+
+	if err := ValidateServiceID(serviceID); err != nil {
+		return 0, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	serviceState, ok := s.services[serviceID]
+	if !ok {
+		return 0, ErrNotRegistered
+	}
+
+	return serviceState.nextID, nil
+}
+
 func (s *Store) Read(serviceID string, offset int64) ([]LogEntry, error) {
 
 	if err := ValidateServiceID(serviceID); err != nil {
