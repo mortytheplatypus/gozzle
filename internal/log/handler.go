@@ -182,7 +182,7 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, e LogEntry) error {
 		return err
 	}
 
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+	if _, err := fmt.Fprintf(w, "%s\n", b); err != nil {
 		return err
 	}
 
