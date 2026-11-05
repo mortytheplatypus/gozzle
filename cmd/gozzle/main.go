@@ -38,7 +38,7 @@ func main() {
 	sig := <-quit
 	log.Printf("server: received %s, shutting down", sig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.GracefulShutdownTimeoutSeconds)*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
